@@ -19,8 +19,8 @@ def seed_packages():
             "name": "Moderate",
             "min_price": 6000000,
             "max_price": 60000000,
-            "min_price_usd": 4060,
-            "max_price_usd": 40600,
+            "min_price_usd": 4000,
+            "max_price_usd": 40000,
             "duration_days": 18,
             "dividend_percentage": 15,
             "image_url": "/images/moderate.png" # Path to local image
@@ -29,7 +29,7 @@ def seed_packages():
             "name": "Growth",
             "min_price": 70000000,
             "max_price": None, # Represents unlimited
-            "min_price_usd": 47300,
+            "min_price_usd": 47000,
             "max_price_usd": None, # Represents unlimited
             "duration_days": 14,
             "dividend_percentage": 20,
