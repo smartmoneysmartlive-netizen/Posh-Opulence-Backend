@@ -13,7 +13,7 @@ def seed_packages():
             "max_price_usd": 3400,
             "duration_days": 18,
             "dividend_percentage": 10,
-            "image_url": "/images/conservative.png" # Path to local image
+            "image_url": "/images/conservative.jpeg" # Path to local image
         },
         {
             "name": "Moderate",
@@ -23,7 +23,7 @@ def seed_packages():
             "max_price_usd": 40000,
             "duration_days": 18,
             "dividend_percentage": 15,
-            "image_url": "/images/moderate.png" # Path to local image
+            "image_url": "/images/moderate.jpeg" # Path to local image
         },
         {
             "name": "Growth",
@@ -33,7 +33,7 @@ def seed_packages():
             "max_price_usd": None, # Represents unlimited
             "duration_days": 14,
             "dividend_percentage": 20,
-            "image_url": "/images/growth.png" # Path to local image
+            "image_url": "/images/growth.jpeg" # Path to local image
         }
     ]
 
