@@ -1,8 +1,8 @@
-"""initial migration
+"""Initial migration with all models
 
-Revision ID: efc4364fcab6
+Revision ID: 2d668551b3cb
 Revises: 
-Create Date: 2025-12-02 21:21:09.391527
+Create Date: 2025-12-08 22:25:20.972897
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'efc4364fcab6'
+revision = '2d668551b3cb'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -53,6 +53,7 @@ def upgrade():
     sa.Column('activation_date', sa.DateTime(), nullable=True),
     sa.Column('expiry_date', sa.DateTime(), nullable=True),
     sa.Column('rejection_reason', sa.String(length=255), nullable=True),
+    sa.Column('total_withdrawn', sa.Float(), nullable=False),
     sa.Column('payment_method', sa.String(length=50), nullable=True),
     sa.Column('payment_proof_url', sa.String(length=255), nullable=True),
     sa.Column('depositor_name', sa.String(length=120), nullable=True),
@@ -67,11 +68,14 @@ def upgrade():
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('user_package_id', sa.Integer(), nullable=False),
     sa.Column('amount', sa.Float(), nullable=False),
-    sa.Column('account_name', sa.String(length=120), nullable=False),
-    sa.Column('account_number', sa.String(length=50), nullable=False),
-    sa.Column('bank_name', sa.String(length=120), nullable=False),
     sa.Column('status', sa.String(length=20), nullable=False),
     sa.Column('request_date', sa.DateTime(), nullable=False),
+    sa.Column('withdrawal_method', sa.String(length=50), nullable=False),
+    sa.Column('account_name', sa.String(length=120), nullable=True),
+    sa.Column('account_number', sa.String(length=50), nullable=True),
+    sa.Column('bank_name', sa.String(length=120), nullable=True),
+    sa.Column('wallet_address', sa.String(length=255), nullable=True),
+    sa.Column('crypto_network', sa.String(length=50), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.ForeignKeyConstraint(['user_package_id'], ['user_package.id'], ),
     sa.PrimaryKeyConstraint('id'),

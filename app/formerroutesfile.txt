@@ -2,6 +2,7 @@ from flask import request, jsonify, Blueprint
 from datetime import datetime, timedelta
 from .models import User, Package, UserPackage, WithdrawalRequest
 from .extensions import db
+from .utils import send_email
 import cloudinary.uploader
 import secrets
 import logging
@@ -9,15 +10,15 @@ import logging
 api = Blueprint('api', __name__)
 
 def calculate_expiry_date(start_date, working_days):
+    """Calculates the expiry date by adding only working days (Mon-Fri)."""
     current_date = start_date
     days_added = 0
     while days_added < working_days:
         current_date += timedelta(days=1)
-        if current_date.weekday() < 5:
+        if current_date.weekday() < 5:  # Monday is 0, Sunday is 6
             days_added += 1
     return current_date
 
-# --- Auth Route ---
 @api.route('/auth', methods=['POST'])
 def authenticate():
     data = request.json
@@ -51,7 +52,6 @@ def authenticate():
     user_data['is_new_user'] = is_new_user
     return jsonify(user_data)
 
-# --- Main User Routes ---
 @api.route('/packages', methods=['GET'])
 def get_packages():
     packages = Package.query.all()
@@ -117,16 +117,21 @@ def upload_payment_proof(user_package_id):
 def submit_bank_details(user_package_id):
     data = request.json
     user_package = UserPackage.query.get_or_404(user_package_id)
+
     user_package.depositor_name = data.get('depositor_name')
     user_package.depositor_bank = data.get('depositor_bank')
     user_package.deposited_amount = data.get('deposited_amount')
     user_package.payment_method = 'bank_transfer'
+    
     db.session.commit()
     return jsonify({"message": "Payment details submitted. Awaiting admin confirmation."})
 
 @api.route('/user/<int:user_id>/dashboard', methods=['GET'])
 def get_user_dashboard(user_id):
-    user_packages = UserPackage.query.filter_by(user_id=user_id).order_by(UserPackage.purchase_date.desc()).all()
+    user_packages = UserPackage.query.filter_by(user_id=user_id)\
+        .filter(UserPackage.status.in_(['pending', 'paid', 'expired', 'rejected']))\
+        .order_by(UserPackage.purchase_date.desc()).all()
+    
     return jsonify([up.to_dict() for up in user_packages])
 
 @api.route('/user/<int:user_id>/history', methods=['GET'])
@@ -161,65 +166,141 @@ def request_withdrawal():
     if user_package.status != 'paid' or not user_package.expiry_date or user_package.expiry_date > datetime.utcnow():
         return jsonify({"error": "Withdrawal is not yet available for this package."}), 400
 
-    requested_amount = float(data.get('amount'))
+    try:
+        requested_amount = float(data.get('amount'))
+        if requested_amount <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid withdrawal amount provided."}), 400
+
     dividend_earned = user_package.investment_amount * (user_package.package.dividend_percentage / 100)
 
     if requested_amount > dividend_earned:
-        return jsonify({"error": f"Amount cannot exceed dividend of {dividend_earned:,.2f}."}), 400
+        return jsonify({"error": f"Withdrawal amount cannot exceed the earned dividend of {dividend_earned:,.2f}."}), 400
     
-    # Use a filter that finds requests that are not yet approved/rejected
-    existing_request = WithdrawalRequest.query.filter_by(user_package_id=user_package_id, status='pending').first()
+    existing_request = WithdrawalRequest.query.filter_by(user_package_id=user_package_id).first()
     if existing_request:
-        return jsonify({"error": "A pending withdrawal request already exists for this package."}), 400
+        return jsonify({"error": "A withdrawal request for this package already exists."}), 400
 
-    withdrawal_data = { "user_id": user_package.user_id, "user_package_id": user_package_id, "amount": requested_amount, "withdrawal_method": data.get('withdrawal_method') }
-    if data.get('withdrawal_method') == 'bank_transfer':
-        withdrawal_data.update({'account_name': data.get('account_name'), 'account_number': data.get('account_number'), 'bank_name': data.get('bank_name')})
-    else: # crypto
-        withdrawal_data.update({'wallet_address': data.get('wallet_address'), 'crypto_network': data.get('crypto_network')})
+    withdrawal_method = data.get('withdrawal_method')
+    
+    withdrawal_data = {
+        "user_id": user_package.user_id,
+        "user_package_id": user_package_id,
+        "amount": requested_amount,
+        "withdrawal_method": withdrawal_method
+    }
+
+    if withdrawal_method == 'bank_transfer':
+        withdrawal_data['account_name'] = data.get('account_name')
+        withdrawal_data['account_number'] = data.get('account_number')
+        withdrawal_data['bank_name'] = data.get('bank_name')
+        if not all([withdrawal_data['account_name'], withdrawal_data['account_number'], withdrawal_data['bank_name']]):
+            return jsonify({"error": "Bank details are required for this withdrawal method."}), 400
+    elif withdrawal_method == 'crypto':
+        withdrawal_data['wallet_address'] = data.get('wallet_address')
+        withdrawal_data['crypto_network'] = data.get('crypto_network')
+        if not all([withdrawal_data['wallet_address'], withdrawal_data['crypto_network']]):
+            return jsonify({"error": "Wallet address and network are required for this withdrawal method."}), 400
+    else:
+        return jsonify({"error": "Invalid withdrawal method specified."}), 400
 
     new_withdrawal = WithdrawalRequest(**withdrawal_data)
-    user_package.status = 'expired' # Mark as pending withdrawal
+    user_package.status = 'expired'
     db.session.add(new_withdrawal)
     db.session.commit()
-    return jsonify({"message": "Withdrawal will be processed within 0-5 working days."}), 201
+    return jsonify({"message": "Your withdrawal request has been received, kindly wait for 7 working days."}), 201
 
-# --- Admin Routes ---
+@api.route('/admin/packages', methods=['POST'])
+def create_package():
+    try:
+        data = request.form
+        if 'image' not in request.files:
+            return jsonify({"error": "No image file provided"}), 400
+        
+        file = request.files['image']
+        
+        required_fields = ['name', 'min_price', 'min_price_usd', 'duration_days', 'dividend_percentage']
+        if not all(field in data for field in required_fields):
+            return jsonify({"error": "Missing required form data"}), 400
+
+        upload_result = cloudinary.uploader.upload(file, folder="package_images")
+        
+        new_package = Package(
+            name=data['name'], 
+            min_price=float(data['min_price']),
+            max_price=float(data['max_price']) if data.get('max_price') else None,
+            min_price_usd=float(data['min_price_usd']),
+            max_price_usd=float(data['max_price_usd']) if data.get('max_price_usd') else None,
+            duration_days=int(data['duration_days']),
+            dividend_percentage=float(data['dividend_percentage']),
+            image_url=upload_result['secure_url']
+        )
+        db.session.add(new_package)
+        db.session.commit()
+        return jsonify(new_package.to_dict()), 201
+    except Exception as e:
+        logging.error(f"Error creating package: {e}", exc_info=True)
+        return jsonify({"error": "An internal server error occurred."}), 500
+
 @api.route('/admin/pending', methods=['GET'])
 def get_pending_packages():
-    pending_packages = UserPackage.query.filter_by(status='pending').filter(
+    pending_packages = UserPackage.query.filter(
+        UserPackage.status == 'pending',
         (UserPackage.payment_proof_url != None) | (UserPackage.depositor_name != None)
     ).order_by(UserPackage.purchase_date.asc()).all()
     
     result = []
     for up in pending_packages:
-        details = up.user.to_dict()
-        details.update(up.to_dict())
-        details['package_name'] = up.package.name
+        details = {
+            "user_package_id": up.id,
+            "user_name": up.user.first_name,
+            "telegram_id": up.user.telegram_id,
+            "package_name": up.package.name,
+            "investment_amount": up.investment_amount,
+            "purchase_date": up.purchase_date.isoformat(),
+            "payment_method": up.payment_method
+        }
         if up.payment_method == 'crypto':
             details["payment_proof_url"] = up.payment_proof_url
         elif up.payment_method == 'bank_transfer':
-            details.update({"depositor_name": up.depositor_name, "depositor_bank": up.depositor_bank, "deposited_amount": up.deposited_amount})
+            details["depositor_name"] = up.depositor_name
+            details["depositor_bank"] = up.depositor_bank
+            details["deposited_amount"] = up.deposited_amount
+        
         result.append(details)
         
     return jsonify(result)
 
+@api.route('/admin/history', methods=['GET'])
+def get_admin_history():
+    history = UserPackage.query.filter(UserPackage.status.in_(['paid', 'rejected', 'expired', 'withdrawn'])).order_by(UserPackage.purchase_date.desc()).all()
+    result = [{"user_package_id": up.id, "user_name": up.user.first_name, "package_name": up.package.name, "status": up.status, "date": (up.activation_date or up.purchase_date).isoformat(), "reason": up.rejection_reason} for up in history]
+    return jsonify(result)
+
 @api.route('/admin/approve/<int:user_package_id>', methods=['POST'])
 def approve_payment(user_package_id):
-    package = UserPackage.query.get_or_404(user_package_id)
-    package.status = 'paid'
-    package.activation_date = datetime.utcnow()
-    package.expiry_date = calculate_expiry_date(package.activation_date, package.package.duration_days)
+    up = UserPackage.query.get_or_404(user_package_id)
+    if up.status != 'pending':
+        return jsonify({"error": "Package is not in a 'pending' state"}), 400
+    
+    up.status = 'paid'
+    up.activation_date = datetime.utcnow()
+    up.expiry_date = calculate_expiry_date(up.activation_date, up.package.duration_days)
+    
     db.session.commit()
-    return jsonify({"message": "Package approved and activated."})
+    return jsonify({"message": "Payment approved. Package activated."})
 
 @api.route('/admin/reject/<int:user_package_id>', methods=['POST'])
 def reject_payment(user_package_id):
-    package = UserPackage.query.get_or_404(user_package_id)
-    package.status = 'rejected'
-    package.rejection_reason = request.json.get('reason', 'No reason provided.')
+    data = request.json
+    reason = data.get('reason', 'No reason provided.')
+    up = UserPackage.query.get_or_404(user_package_id)
+    if up.status != 'pending':
+        return jsonify({"error": "Package is not in a 'pending' state"}), 400
+    up.status, up.rejection_reason = 'rejected', reason
     db.session.commit()
-    return jsonify({"message": "Package rejected."})
+    return jsonify({"message": "Payment rejected."})
 
 @api.route('/admin/withdrawals', methods=['GET'])
 def get_pending_withdrawals():
@@ -229,33 +310,8 @@ def get_pending_withdrawals():
 @api.route('/admin/withdrawals/<int:withdrawal_id>/approve', methods=['POST'])
 def approve_withdrawal(withdrawal_id):
     withdrawal = WithdrawalRequest.query.get_or_404(withdrawal_id)
+    withdrawal.status = 'approved'
     user_package = withdrawal.user_package
-    
-    user_package.total_withdrawn += withdrawal.amount
-    
-    if user_package.total_withdrawn >= user_package.investment_amount:
-        user_package.status = 'withdrawn' # Cycle is complete
-    else:
-        user_package.status = 'paid' # Renew for another cycle
-        user_package.activation_date = datetime.utcnow()
-        user_package.expiry_date = calculate_expiry_date(user_package.activation_date, user_package.package.duration_days)
-    
-    db.session.delete(withdrawal) # Delete the processed request
+    user_package.status = 'withdrawn'
     db.session.commit()
-    return jsonify({"message": "Withdrawal approved and package renewed."})
-
-@api.route('/admin/history', methods=['GET'])
-def get_admin_history():
-    history = UserPackage.query.filter(UserPackage.status.in_(['paid', 'rejected', 'expired', 'withdrawn'])).order_by(UserPackage.purchase_date.desc()).all()
-    result = []
-    for up in history:
-        item = {
-            "user_package_id": up.id, 
-            "user_name": up.user.first_name, 
-            "package_name": up.package.name, 
-            "status": up.status, 
-            "date": (up.activation_date or up.purchase_date).isoformat(), 
-            "reason": up.rejection_reason
-        }
-        result.append(item)
-    return jsonify(result)
+    return jsonify({"message": "Withdrawal approved."})

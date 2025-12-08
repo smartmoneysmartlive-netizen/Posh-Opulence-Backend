@@ -28,9 +28,9 @@ class Package(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
     min_price = db.Column(db.Float, nullable=False)
-    max_price = db.Column(db.Float, nullable=True) # Nullable for 'unlimited'
+    max_price = db.Column(db.Float, nullable=True)
     min_price_usd = db.Column(db.Float, nullable=False)
-    max_price_usd = db.Column(db.Float, nullable=True) # Nullable for 'unlimited'
+    max_price_usd = db.Column(db.Float, nullable=True)
     duration_days = db.Column(db.Integer, nullable=False)
     dividend_percentage = db.Column(db.Float, nullable=False, default=10.0)
     image_url = db.Column(db.String(255), nullable=True)
@@ -53,18 +53,19 @@ class UserPackage(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     package_id = db.Column(db.Integer, db.ForeignKey('package.id'), nullable=False)
     investment_amount = db.Column(db.Float, nullable=False)
-    status = db.Column(db.String(20), nullable=False, default='pending') # pending, paid, expired, rejected, withdrawn
+    status = db.Column(db.String(20), nullable=False, default='pending')
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     activation_date = db.Column(db.DateTime, nullable=True)
     expiry_date = db.Column(db.DateTime, nullable=True)
     rejection_reason = db.Column(db.String(255), nullable=True)
+    
+    total_withdrawn = db.Column(db.Float, nullable=False, default=0.0)
+
     package = db.relationship('Package')
     withdrawal_request = db.relationship('WithdrawalRequest', backref='user_package', uselist=False, cascade="all, delete-orphan")
-
-    payment_method = db.Column(db.String(50), nullable=True) # 'crypto' or 'bank_transfer'
     
+    payment_method = db.Column(db.String(50), nullable=True)
     payment_proof_url = db.Column(db.String(255), nullable=True)
-    
     depositor_name = db.Column(db.String(120), nullable=True)
     depositor_bank = db.Column(db.String(120), nullable=True)
     deposited_amount = db.Column(db.Float, nullable=True)
@@ -75,6 +76,7 @@ class UserPackage(db.Model):
             "user_package_id": self.id,
             "package_name": package_info.get('name'),
             "investment_amount": self.investment_amount,
+            "total_withdrawn": self.total_withdrawn,
             "package_dividend_percentage": package_info.get('dividend_percentage'),
             "status": self.status,
             "purchase_date": self.purchase_date.isoformat() if self.purchase_date else None,
@@ -89,17 +91,15 @@ class WithdrawalRequest(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     user_package_id = db.Column(db.Integer, db.ForeignKey('user_package.id'), nullable=False, unique=True)
     amount = db.Column(db.Float, nullable=False)
-    status = db.Column(db.String(20), nullable=False, default='pending') # pending, approved, rejected
+    status = db.Column(db.String(20), nullable=False, default='pending')
     request_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    
+        
     withdrawal_method = db.Column(db.String(50), nullable=False)
 
-    # Bank Transfer Details
     account_name = db.Column(db.String(120), nullable=True)
     account_number = db.Column(db.String(50), nullable=True)
     bank_name = db.Column(db.String(120), nullable=True)
 
-    # Crypto Details
     wallet_address = db.Column(db.String(255), nullable=True)
     crypto_network = db.Column(db.String(50), nullable=True)
 
